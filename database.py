@@ -140,7 +140,6 @@ class Database:
         with self._lock:
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    # Serialise creation so two admins cannot open two rounds at once.
                     cur.execute("SELECT pg_advisory_xact_lock(93451001)")
                     cur.execute(
                         """
@@ -231,11 +230,6 @@ class Database:
         user_id: int,
         built_in_themes: Iterable[str],
     ):
-        """Pick and add one random eligible theme atomically.
-
-        The PostgreSQL advisory lock guarantees that simultaneous /pfp random
-        calls in the same election cannot reserve the same theme.
-        """
         with self._lock:
             with self._connect() as conn:
                 with conn.cursor() as cur:
@@ -265,9 +259,7 @@ class Database:
                         for row in cur.fetchall()
                     }
 
-                    cur.execute(
-                        "SELECT theme FROM custom_themes WHERE enabled=TRUE"
-                    )
+                    cur.execute("SELECT theme FROM custom_themes WHERE enabled=TRUE")
                     custom = [row["theme"] for row in cur.fetchall()]
 
                     cur.execute("SELECT theme FROM disabled_themes")
@@ -300,9 +292,6 @@ class Database:
                     if not pool:
                         return None
 
-                    # Extremely unlikely to need more than one attempt, but loop
-                    # defensively in case a case-insensitive unique constraint
-                    # rejects a candidate added elsewhere.
                     rng = random.SystemRandom()
                     while pool:
                         theme = rng.choice(pool)
@@ -471,6 +460,62 @@ class Database:
                     (limit,),
                 )
                 return cur.fetchall()
+
+    def closed_round_votes(self, round_id: int | None = None):
+        """Return all vote details for a closed round.
+
+        When round_id is omitted, the most recently closed round is returned.
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if round_id is None:
+                    cur.execute(
+                        """
+                        SELECT round_id, theme, votes, closed_at
+                        FROM group_history
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT round_id, theme, votes, closed_at
+                        FROM group_history
+                        WHERE round_id=%s
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (round_id,),
+                    )
+
+                history = cur.fetchone()
+                if not history:
+                    return None
+
+                cur.execute(
+                    """
+                    SELECT
+                        s.id AS suggestion_id,
+                        s.theme,
+                        v.user_id
+                    FROM suggestions s
+                    LEFT JOIN votes v
+                        ON v.round_id=s.round_id
+                        AND v.suggestion_id=s.id
+                    WHERE s.round_id=%s
+                    ORDER BY s.id ASC, v.user_id ASC
+                    """,
+                    (history["round_id"],),
+                )
+
+                return {
+                    "round_id": int(history["round_id"]),
+                    "winner_theme": history["theme"],
+                    "winner_votes": int(history["votes"]),
+                    "closed_at": history["closed_at"],
+                    "rows": cur.fetchall(),
+                }
 
     # ---------- Theme library ----------
 

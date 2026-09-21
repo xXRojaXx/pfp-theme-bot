@@ -354,6 +354,88 @@ async def pfp_history(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@pfp.command(
+    name="voters",
+    description="Privately show who voted for each theme in a closed PFP round.",
+)
+@app_commands.describe(
+    round_id="Closed round number. Leave empty to view the latest closed round."
+)
+async def pfp_voters(
+    interaction: discord.Interaction,
+    round_id: Optional[int] = None,
+):
+    if not await require_admin(interaction):
+        return
+
+    result = db.closed_round_votes(round_id)
+    if not result:
+        message = (
+            f"Closed round **#{round_id}** was not found."
+            if round_id is not None
+            else "There are no closed PFP rounds yet."
+        )
+        await interaction.response.send_message(message, ephemeral=True)
+        return
+
+    grouped: dict[str, list[int]] = {}
+    for row in result["rows"]:
+        grouped.setdefault(row["theme"], [])
+        if row["user_id"] is not None:
+            grouped[row["theme"]].append(int(row["user_id"]))
+
+    async def voter_name(user_id: int) -> str:
+        if interaction.guild is None:
+            return f"User ID {user_id}"
+
+        member = interaction.guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return f"User ID {user_id}"
+
+        return member.display_name
+
+    lines = []
+    winner_key = result["winner_theme"].casefold()
+    for theme, user_ids in grouped.items():
+        names = [await voter_name(user_id) for user_id in user_ids]
+        count = len(names)
+        winner = "🏆 " if theme.casefold() == winner_key else ""
+        voters = ", ".join(names) if names else "No votes"
+        lines.append(
+            f"{winner}**{theme} — {count} vote{'s' if count != 1 else ''}**\n{voters}"
+        )
+
+    chunks = chunk_lines(lines, limit=3600)
+    embeds = []
+    for index, chunk in enumerate(chunks):
+        embed = discord.Embed(
+            title=(
+                f"🔒 Private Vote Details — Round #{result['round_id']}"
+                if index == 0
+                else f"🔒 Round #{result['round_id']} (continued)"
+            ),
+            description=chunk,
+        )
+        if index == 0:
+            embed.set_footer(
+                text=(
+                    f"Winner: {result['winner_theme']} • "
+                    f"{result['winner_votes']} vote"
+                    f"{'s' if result['winner_votes'] != 1 else ''} • Admin only"
+                )
+            )
+        embeds.append(embed)
+
+    await interaction.response.send_message(
+        embeds=embeds,
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
 # -------------------- Random suggestion helper --------------------
 
 @pfp.command(name="random", description="Add one unique random theme to the current PFP election.")
