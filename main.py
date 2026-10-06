@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from typing import Optional
 
@@ -16,7 +18,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URI")
-GUILD_ID = int(os.getenv("GUILD_ID", "1483821302463860798")) or None
+logger = logging.getLogger(__name__)
 
 ADMIN_ROLE_ID = 1537069353768329246
 
@@ -165,18 +167,26 @@ class PFPBot(commands.Bot):
             intents=intents,
             help_command=None,
         )
+        self._synced_guild_ids: set[int] = set()
+        self._command_sync_lock = asyncio.Lock()
 
     async def setup_hook(self):
         self.add_view(PersistentVoteLauncher())
 
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
+    async def sync_guild_commands(self, guild: discord.Guild):
+        # READY supplies the actual guilds, including servers added after migration.
+        # Cache successes so reconnects do not repeatedly register the same commands.
+        async with self._command_sync_lock:
+            if guild.id in self._synced_guild_ids:
+                return
             self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} commands to guild {GUILD_ID}.")
-        else:
-            synced = await self.tree.sync()
-            print(f"Synced {len(synced)} global commands.")
+            try:
+                synced = await self.tree.sync(guild=guild)
+            except discord.HTTPException:
+                logger.exception("Could not sync PFP commands to guild %s.", guild.id)
+                return
+            self._synced_guild_ids.add(guild.id)
+            print(f"Synced {len(synced)} commands to guild {guild.id}.")
 
 
 bot = PFPBot()
@@ -581,6 +591,18 @@ bot.tree.add_command(pfp)
 async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id if bot.user else 'unknown'})")
     print(f"Built-in PFP themes loaded: {THEME_COUNT}")
+    for guild in bot.guilds:
+        await bot.sync_guild_commands(guild)
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    await bot.sync_guild_commands(guild)
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    bot._synced_guild_ids.discard(guild.id)
 
 
 if __name__ == "__main__":
