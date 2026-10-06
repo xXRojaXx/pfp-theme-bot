@@ -1,6 +1,8 @@
 # PFP Theme Bot — Northflank
 
-Discord PFP theme election bot for guild `1483821302463860798`.
+Discord PFP theme election bot. Commands are registered automatically in every server where the bot is installed.
+
+This deployment keeps one shared election and theme bank. Installing it in another server does not create a separate election or migrate stored votes.
 
 ## What it does
 
@@ -83,19 +85,32 @@ Add:
 
 ```text
 DISCORD_TOKEN=<your private Discord bot token>
-GUILD_ID=1483821302463860798
 ```
 
 The database URL should come from the linked PostgreSQL addon.
+
+`GUILD_ID` is no longer required. An old value can remain in Northflank without restricting registration to the previous server.
 
 ### 7. Deploy
 
 After the container starts, logs should include:
 
 ```text
-Synced ... commands to guild 1483821302463860798.
 Logged in as ...
 Built-in PFP themes loaded: 1091
+Synced ... commands to guild <current server ID>.
 ```
 
 Then test in Discord with `/pfp new`.
+
+Commands are synchronized when the bot connects and when it joins another server. Successful registrations are cached until restart so reconnecting does not repeatedly synchronize them. A failure in one server is logged without stopping registration in the others.
+
+If `/pfp` is missing, check the deployed revision and the `Synced ...` log for that server. The bot's installation must include the `bot` and `applications.commands` OAuth scopes. Members also need permission to use application commands in the target channel.
+
+## Verify command registration locally
+
+```text
+python -m unittest discover -s tests -v
+```
+
+These tests mock Discord HTTP and database access; no bot token or live PostgreSQL database is needed.
